@@ -1,0 +1,27 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "zedgi"
+version = "1.0.0"
+description = "Call your own Redis, Postgres, and MySQL from any Python runtime over HTTPS."
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+authors = [{ name = "Diadal", email = "peter@zedgi.app" }]
+keywords = ["zedgi", "redis", "postgres", "mysql", "rpc", "proxy", "edge", "serverless"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Topic :: Database",
+]
+dependencies = []  # stdlib only
+
+[project.urls]
+Homepage = "https://zedgi.app"
+Documentation = "https://zedgi.app/docs"
+
+[tool.hatch.build.targets.wheel]
+packages = ["zedgi"]
