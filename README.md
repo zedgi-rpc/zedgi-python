@@ -50,6 +50,27 @@ client: ZedgiClient = create_client(
 )
 ```
 
+With zero-knowledge credential linking and signed header metadata:
+
+```python
+client = create_client(
+    url="https://YOUR_SUBDOMAIN.zedgi.app",
+    key="zk_...",
+    signing_secret=os.environ["ZEDGI_SECRET"],
+    credential={
+        "host": "db.example.com",
+        "user": "app",
+        "password": os.environ["DB_PASSWORD"],
+        "database": "main",
+        "header": {
+            "x-firewall-token": os.environ["DB_FIREWALL_TOKEN"],
+        },
+    },
+)
+```
+
+`credential["header"]` is excluded from ECIES encryption and sent as signed plaintext metadata for proxy/firewall integrations.
+
 ## Redis
 
 The Redis client exposes many common commands and a generic `call()` escape hatch. Unknown method names are forwarded as custom hooks.
@@ -144,12 +165,12 @@ result = t.call("redis", "get", {"args": ["mykey"]})
 - `RedisClient`, `PostgresClient`, `MySQLClient`
 - `RpcError`
 
-All clients are thin and only use the Python standard library.
+All clients are thin (stdlib only) for the RPC facade. For the full zero-knowledge "link" (client-side ECIES encryption of your DB credentials into `x-zedgi-cred` + request signing), supply your `secret` + `credential` (and optionally `public_key`). If `credential["header"]` is present, it is signed and forwarded separately instead of being public-key encrypted. The packages will perform encryption + signing for you when those values are provided. See the JS client docs and https://zedgi.app/docs for the exact options and the auto public-key pull behavior.
 
 ## Related
 
 - JavaScript/TypeScript client: [`@zedgi/zedgi-client`](https://www.npmjs.com/package/@zedgi/zedgi-client)
-- Full documentation & API reference: https://zedgi.app/docs
+- Full documentation & API reference: https://zedgi.app/docs (includes credential linking, key rotation, and public key auto-fetch)
 - Dashboard: https://zedgi.app
 
 ## License

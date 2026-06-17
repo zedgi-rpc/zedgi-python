@@ -9,7 +9,7 @@ description = "Call your own Redis, Postgres, and MySQL from any Python runtime 
 readme = "README.md"
 requires-python = ">=3.8"
 license = { text = "MIT" }
-authors = [{ name = "Diadal", email = "peter@zedgi.app" }]
+authors = [{ name = "Olaoluwa", email = "olaoluwa@zedgi.app" }]
 keywords = ["zedgi", "redis", "postgres", "mysql", "rpc", "proxy", "edge", "serverless"]
 classifiers = [
   "Programming Language :: Python :: 3",
@@ -17,11 +17,19 @@ classifiers = [
   "Operating System :: OS Independent",
   "Topic :: Database",
 ]
-dependencies = []  # stdlib only
+dependencies = []  # stdlib only for transport + request signing
+
+[project.optional-dependencies]
+crypto = ["cryptography>=41.0"]  # required for client-side credential encryption (ECIES)
 
 [project.urls]
 Homepage = "https://zedgi.app"
 Documentation = "https://zedgi.app/docs"
+Repository = "https://github.com/zedgi-rpc/zedgi-python"
+"Bug Tracker" = "https://github.com/zedgi-rpc/zedgi-python/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["zedgi"]
+
+[tool.hatch.build.targets.sdist]
+include = ["zedgi", "README.md", "LICENSE"]
