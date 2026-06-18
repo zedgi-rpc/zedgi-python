@@ -4,14 +4,15 @@ Ports the wire formats enforced server-side by ``app/Support/ecies.ts`` and
 ``app/Middleware/RequestSignature.ts`` so credentials are encrypted and requests
 are signed before they leave the developer's process.
 
-ECIES uses X25519 + HKDF-SHA256 + AES-256-GCM via the ``cryptography`` package
-(install the ``zedgi[crypto]`` extra). HMAC-SHA256 + SHA-256 use the stdlib.
+ECIES uses ECDH (X25519, or P-256 for legacy account keys) + HKDF-SHA256 +
+AES-256-GCM via the ``cryptography`` package (install the ``zedgi[crypto]``
+extra). HMAC-SHA256 + SHA-256 use the stdlib.
 
 Blob layout (binary, then base64url) — must match app/Support/ecies.ts:
-    0x01          (1 byte  — version, X25519)
+    0x01|0x02     (1 byte  — version: 0x01 X25519, 0x02 P-256)
     accountId     (16 bytes — account id hex, raw binary)
     keyVersion    (2 bytes  — uint16 big-endian)
-    ephemeralPub  (32 bytes — X25519 raw public key)
+    ephemeralPub  (32 bytes X25519 / 65 bytes P-256 — raw public key)
     iv            (12 bytes — AES-GCM nonce)
     ciphertext+tag(variable)
 """
@@ -52,20 +53,35 @@ def encrypt_credential(
             X25519PrivateKey,
             X25519PublicKey,
         )
+        from cryptography.hazmat.primitives.asymmetric import ec
         from cryptography.hazmat.primitives.ciphers.aead import AESGCM
         from cryptography.hazmat.primitives.kdf.hkdf import HKDF
-        from cryptography.hazmat.primitives import hashes
+        from cryptography.hazmat.primitives import hashes, serialization
     except ImportError as exc:  # pragma: no cover
         raise RuntimeError(
             "Credential encryption requires the 'cryptography' package. "
             "Install it with: pip install 'zedgi[crypto]'"
         ) from exc
 
-    recipient_pub = X25519PublicKey.from_public_bytes(_b64u_decode(public_key_b64u))
-    ephemeral_priv = X25519PrivateKey.generate()
-    ephemeral_pub_raw = ephemeral_priv.public_key().public_bytes_raw()
+    # The recipient key's length picks the curve (32 = X25519 v0x01, 65 = P-256
+    # v0x02 uncompressed) — never a runtime default. A P-256 account key must be
+    # used with P-256. Mirrors app/Support/ecies.ts and the TS SDK.
+    recipient_raw = _b64u_decode(public_key_b64u)
+    if len(recipient_raw) == 32:
+        version = b"\x01"
+        ephemeral_priv = X25519PrivateKey.generate()
+        recipient_pub = X25519PublicKey.from_public_bytes(recipient_raw)
+        ephemeral_pub_raw = ephemeral_priv.public_key().public_bytes_raw()
+        shared = ephemeral_priv.exchange(recipient_pub)
+    else:
+        version = b"\x02"
+        ephemeral_priv = ec.generate_private_key(ec.SECP256R1())
+        recipient_pub = ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), recipient_raw)
+        ephemeral_pub_raw = ephemeral_priv.public_key().public_bytes(
+            serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint
+        )
+        shared = ephemeral_priv.exchange(ec.ECDH(), recipient_pub)
 
-    shared = ephemeral_priv.exchange(recipient_pub)
     aes_key = HKDF(
         algorithm=hashes.SHA256(),
         length=32,
@@ -81,7 +97,7 @@ def encrypt_credential(
         raise ValueError("account_id must be 16 bytes (32 hex chars)")
     kv_bytes = struct.pack(">H", key_version)  # uint16 big-endian
 
-    blob = b"\x01" + acc_bytes + kv_bytes + ephemeral_pub_raw + iv + ciphertext
+    blob = version + acc_bytes + kv_bytes + ephemeral_pub_raw + iv + ciphertext
     return _b64u_encode(blob)
 
 

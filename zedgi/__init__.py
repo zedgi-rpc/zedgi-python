@@ -69,7 +69,7 @@ def create_client(
     :param url:            Your personal Zedgi endpoint, e.g. ``https://dev123.zedgi.app``
     :param key:            A Zedgi API key (``zk_...`` public identifier)
     :param timeout:        Per-request timeout in seconds (default 10)
-    :param signing_secret: HMAC signing secret; when set, every request is signed
+    :param signing_secret: optional HMAC signing secret; auto-pulled + cached when omitted
     :param credential:     DB/service credentials encrypted client-side (zero-knowledge)
     :param public_key:     Account X25519 public key (base64url); auto-pulled if omitted
     :param account_id:     32-hex account id for the cred blob; auto-pulled if omitted

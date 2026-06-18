@@ -50,15 +50,14 @@ client: ZedgiClient = create_client(
 )
 ```
 
-With zero-knowledge credential linking and signed header metadata:
+You normally pass just **`url`, `key`, and `credential`** — request signing is
+automatic (the signing secret is auto-pulled and cached; you don't supply it).
 
 ```python
 client = create_client(
     url="https://YOUR_SUBDOMAIN.zedgi.app",
-    key="zk_...",
-    signing_secret=os.environ["ZEDGI_SECRET"],
-    credential={
-        "host": "db.example.com",
+    key="zk_...",                       # from the dashboard; signing is automatic
+    credential={                        # your DB secrets — host/port are on the service
         "user": "app",
         "password": os.environ["DB_PASSWORD"],
         "database": "main",
@@ -68,6 +67,15 @@ client = create_client(
     },
 )
 ```
+
+**Where each value comes from**
+
+- **`key`** — created in the dashboard (open your service → **+ New key**), sent as `x-zedgi-key`.
+- **`credential`** — your **own database** credentials. `host`/`port` come from the registered service, not here. Shapes:
+  - redis: `{"password": "s3cr3t"}` (or add `"db": 2`; omit entirely if password-less)
+  - postgres: `{"user": "app", "password": "s3cr3t", "database": "prod", "ssl": True}`
+  - mysql: `{"user": "app", "password": "s3cr3t", "database": "prod"}`
+- **`signing_secret`** — **optional.** Auto-pulled via `GET /api/account/signing-secret` (authed by `key`) and cached. Pass it only to manage signing yourself.
 
 `credential["header"]` is excluded from ECIES encryption and sent as signed plaintext metadata for proxy/firewall integrations.
 
@@ -165,7 +173,7 @@ result = t.call("redis", "get", {"args": ["mykey"]})
 - `RedisClient`, `PostgresClient`, `MySQLClient`
 - `RpcError`
 
-All clients are thin (stdlib only) for the RPC facade. For the full zero-knowledge "link" (client-side ECIES encryption of your DB credentials into `x-zedgi-cred` + request signing), supply your `secret` + `credential` (and optionally `public_key`). If `credential["header"]` is present, it is signed and forwarded separately instead of being public-key encrypted. The packages will perform encryption + signing for you when those values are provided. See the JS client docs and https://zedgi.app/docs for the exact options and the auto public-key pull behavior.
+All clients are thin (stdlib only) for the RPC facade. For the full zero-knowledge "link" (client-side ECIES encryption of your DB credentials into `x-zedgi-cred` + request signing), supply just `key` + `credential`. The client auto-pulls both the signing secret (`GET /api/account/signing-secret`) and the account public key (`GET /api/account/keys/current`) using your `key`, and caches them — so you don't manage either. If `credential["header"]` is present, it is signed and forwarded separately instead of being public-key encrypted. See https://zedgi.app/docs for the full option reference.
 
 ## Related
 

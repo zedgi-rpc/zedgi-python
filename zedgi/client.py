@@ -31,7 +31,8 @@ class Transport:
     """Holds connection options and performs the raw ``POST /rpc`` call.
 
     Zero-knowledge parameters (all optional):
-      - ``signing_secret``: HMAC secret; when set, every request is signed.
+      - ``signing_secret``: optional HMAC secret. Auto-pulled and cached when
+        omitted, so every request is signed without you supplying it.
       - ``credential``: dict of DB/service credentials encrypted client-side.
       - ``public_key`` / ``account_id`` / ``key_version``: account key material;
         auto-pulled from ``/api/account/keys/current`` when omitted.
@@ -65,6 +66,7 @@ class Transport:
         self.key_version = key_version
         self.cache = cache
         self._cred_blob: Optional[str] = None
+        self._signing_secret: Optional[str] = signing_secret
 
     # -- account key resolution -------------------------------------------------
 
@@ -96,6 +98,23 @@ class Transport:
         self.key_version = result["key_version"]
         return result
 
+    def _resolve_signing_secret(self) -> str:
+        # Auto-pull the HMAC signing secret (and cache it) when not supplied, so
+        # the developer never has to handle it. Authed by x-zedgi-key.
+        if self._signing_secret:
+            return self._signing_secret
+        req = urllib.request.Request(
+            self.base + "/api/account/signing-secret",
+            method="GET",
+            headers={"x-zedgi-key": self.key},
+        )
+        with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+            parsed = json.loads(resp.read().decode("utf-8"))
+        if not parsed.get("ok") or not parsed.get("result"):
+            raise RpcError("Failed to fetch signing secret", code="ZEDGI_SIGN_PULL")
+        self._signing_secret = parsed["result"]["signing_secret"]
+        return self._signing_secret
+
     def _resolve_cred_blob(self) -> Optional[str]:
         if not self.credential:
             return None
@@ -109,7 +128,11 @@ class Transport:
 
     # -- request ----------------------------------------------------------------
 
-    def call(self, service: str, method: str, payload: Optional[Dict[str, Any]] = None) -> Any:
+    def _auto_key_mode(self) -> bool:
+        # True when we auto-pull the account key (so we can re-pull on rotation).
+        return not (self.public_key and self.account_id and self.key_version is not None)
+
+    def _send_once(self, service: str, method: str, payload: Optional[Dict[str, Any]]) -> tuple:
         credential_header = self._credential_parts()["header"]
         body_payload: Dict[str, Any] = {
             "requestId": str(uuid.uuid4()),
@@ -124,12 +147,13 @@ class Transport:
 
         headers = {"content-type": "application/json", "x-zedgi-key": self.key}
 
-        if self.signing_secret:
-            ts = str(int(time.time() * 1000))
-            nonce = random_nonce()
-            headers["x-zedgi-ts"] = ts
-            headers["x-zedgi-nonce"] = nonce
-            headers["x-zedgi-sig"] = hmac_sign(f"{ts}:{nonce}:{sha256_hex(body_str)}", self.signing_secret)
+        # Every request is signed; the signing secret is auto-pulled when not supplied.
+        secret = self._resolve_signing_secret()
+        ts = str(int(time.time() * 1000))
+        nonce = random_nonce()
+        headers["x-zedgi-ts"] = ts
+        headers["x-zedgi-nonce"] = nonce
+        headers["x-zedgi-sig"] = hmac_sign(f"{ts}:{nonce}:{sha256_hex(body_str)}", secret)
 
         cred_blob = self._resolve_cred_blob()
         if cred_blob:
@@ -139,29 +163,34 @@ class Transport:
 
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                parsed = json.loads(resp.read().decode("utf-8"))
-                status = resp.status
+                return resp.status, json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:  # 4xx/5xx still carry a JSON body
-            # Key rotated: drop cached blob so the next call re-pulls + re-encrypts.
-            if exc.code == 412:
-                self._cred_blob = None
-                if not (self.public_key and self.account_id and self.key_version is not None):
-                    self.public_key = None
             try:
-                parsed = json.loads(exc.read().decode("utf-8"))
+                return exc.code, json.loads(exc.read().decode("utf-8"))
             except Exception:
                 raise RpcError(f"Zedgi request failed ({exc.code})", status=exc.code) from exc
-            status = exc.code
         except urllib.error.URLError as exc:
             raise RpcError(f"Zedgi connection failed: {exc.reason}", code="ZEDGI_CONNECTION") from exc
 
-        if not parsed.get("ok"):
+    def call(self, service: str, method: str, payload: Optional[Dict[str, Any]] = None) -> Any:
+        # Two attempts at most: on a rotated/outdated key (in auto mode) we drop the
+        # cached public key + ciphertext, re-pull the current key, and retry once.
+        for attempt in range(2):
+            status, parsed = self._send_once(service, method, payload)
+            if parsed.get("ok"):
+                return parsed.get("result")
+
             err = parsed.get("error") or {}
+            stale_key = status == 412 or err.get("code") == "CRED_DECRYPT_FAILED"
+            if attempt == 0 and self._auto_key_mode() and stale_key:
+                self._cred_blob = None
+                self.public_key = None  # force a re-pull of the current active key
+                continue
+
             raise RpcError(
                 err.get("message", f"Zedgi call failed ({status})"),
                 code=err.get("code", "ZEDGI_ERROR"),
                 status=status,
                 details=err.get("details"),
             )
-
-        return parsed.get("result")
+        raise RpcError("Zedgi call failed")  # unreachable
