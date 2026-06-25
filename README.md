@@ -102,6 +102,32 @@ redis.pipeline([("SET", ["a", "1"]), ("INCR", ["a"])])
 redis.multi([...])
 ```
 
+## BullMQ queues
+
+BullMQ rides on your existing **Redis** service — there's no separate service to register.
+Each op is sent as the redis service's `bull:<method>` and runs the real BullMQ operation
+(default `bull` key prefix, so jobs interoperate with your own workers).
+
+```python
+queue = zedgi.queue("emails")
+
+# Produce
+queue.add("send", {"to": "dev@example.com"}, {"attempts": 3})
+
+# Inspect
+queue.get_job_counts()      # {"waiting": 1, "active": 0, ...}
+queue.get_job("42")
+queue.get_snapshot()        # counts across all queues — for dashboards
+
+# Manage
+queue.pause()
+queue.retry_job("42")
+queue.clean(0, 1000, "completed")
+```
+
+Workers/consumers still run in your own runtime against the same Redis — this covers producing
+jobs and inspecting/managing queue state, not running the processors.
+
 ## Postgres & MySQL
 
 ```python
@@ -170,7 +196,7 @@ result = t.call("redis", "get", {"args": ["mykey"]})
 
 - `create_client`
 - `ZedgiClient`
-- `RedisClient`, `PostgresClient`, `MySQLClient`
+- `RedisClient`, `PostgresClient`, `MySQLClient`, `Queue`
 - `RpcError`
 
 All clients are thin (stdlib only) for the RPC facade. For the full zero-knowledge "link" (client-side ECIES encryption of your DB credentials into `x-zedgi-cred` + request signing), supply just `key` + `credential`. The client auto-pulls both the signing secret (`GET /api/account/signing-secret`) and the account public key (`GET /api/account/keys/current`) using your `key`, and caches them — so you don't manage either. If `credential["header"]` is present, it is signed and forwarded separately instead of being public-key encrypted. See https://zedgi.app/docs for the full option reference.

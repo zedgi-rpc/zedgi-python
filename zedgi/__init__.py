@@ -15,6 +15,7 @@ from ._version import __version__
 from .client import RpcError, Transport
 from .mysql import MySQLClient
 from .postgres import PostgresClient
+from .queue import Queue
 from .redis import RedisClient
 
 
@@ -51,6 +52,9 @@ class ZedgiClient:
 
     def mysql(self) -> MySQLClient:
         return MySQLClient(self._transport)
+
+    def queue(self, name: str) -> Queue:
+        return Queue(self._transport, name)
 
 
 def create_client(
@@ -95,6 +99,7 @@ __all__ = [
     "RedisClient",
     "PostgresClient",
     "MySQLClient",
+    "Queue",
     "RpcError",
     "__version__",
 ]
