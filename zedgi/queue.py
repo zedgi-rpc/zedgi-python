@@ -66,8 +66,8 @@ class Queue:
     def drain(self, delayed: Optional[bool] = None) -> bool:
         return self._call("drain", [delayed])
 
-    def clean(self, grace: int, limit: int, type: str = "completed") -> Any:
-        return self._call("clean", [grace, limit, type])
+    def clean(self, grace: int, limit: int, job_type: str = "completed") -> Any:
+        return self._call("clean", [grace, limit, job_type])
 
     def remove_job(self, job_id: str) -> bool:
         return self._call("removeJob", [job_id])
