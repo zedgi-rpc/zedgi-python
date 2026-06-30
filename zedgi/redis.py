@@ -3,15 +3,16 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from .client import Transport
+from .client import CredentialSelector, Transport
 
 
 class RedisClient:
-    def __init__(self, transport: Transport) -> None:
+    def __init__(self, transport: Transport, credential: Optional[CredentialSelector] = None) -> None:
         self._t = transport
+        self._credential = credential
 
     def _call(self, method: str, payload: Optional[Dict[str, Any]] = None) -> Any:
-        return self._t.call("redis", method, payload or {})
+        return self._t.call("redis", method, payload or {}, self._credential)
 
     # ── Common built-ins ──────────────────────────────────────────────
     def ping(self) -> str:

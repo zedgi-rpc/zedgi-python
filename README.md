@@ -12,7 +12,15 @@ pip install zedgi
 import os
 from zedgi import create_client
 
-zedgi = create_client(url="https://dev123.zedgi.app", key=os.environ["ZEDGI_KEY"])
+zedgi = create_client(
+    url="https://dev123.zedgi.app",
+    key=os.environ["ZEDGI_KEY"],
+    credentials={
+        "redis": {"default": {"password": os.environ["REDIS_PASSWORD"], "db": 0}},
+        "postgres": {"default": {"user": "app", "password": os.environ["PG_PASSWORD"], "database": "app"}},
+        "mysql": {"default": {"user": "app", "password": os.environ["MYSQL_PASSWORD"], "database": "app"}},
+    },
+)
 
 # Redis
 redis = zedgi.redis()
@@ -50,8 +58,9 @@ client: ZedgiClient = create_client(
 )
 ```
 
-You normally pass just **`url`, `key`, and `credential`** — request signing is
-automatic (the signing secret is auto-pulled and cached; you don't supply it).
+You normally pass **`url`, `key`, and either `credential` or `credentials`** —
+request signing is automatic (the signing secret is auto-pulled and cached; you
+don't supply it).
 
 ```python
 client = create_client(
@@ -71,13 +80,57 @@ client = create_client(
 **Where each value comes from**
 
 - **`key`** — created in the dashboard (open your service → **+ New key**), sent as `x-zedgi-key`.
-- **`credential`** — your **own database** credentials. `host`/`port` come from the registered service, not here. Shapes:
-  - redis: `{"password": "s3cr3t"}` (or add `"db": 2`; omit entirely if password-less)
-  - postgres: `{"user": "app", "password": "s3cr3t", "database": "prod", "ssl": True}`
-  - mysql: `{"user": "app", "password": "s3cr3t", "database": "prod"}`
+- **`credential` / `credentials`** — your **own database** credentials. `host`/`port` come from the registered service, not here. Shapes:
+  - redis: `{"password": "s3cr3t", "db": 2, "header": {"x-firewall-token": "..."}}`; all three keys are optional, and you can omit the credential entirely if Redis is password-less
+  - postgres: `{"user": "app", "password": "s3cr3t", "database": "prod", "ssl": True, "header": {"x-firewall-token": "..."}}`; `ssl` and `header` are optional
+  - mysql: `{"user": "app", "password": "s3cr3t", "database": "prod", "ssl": True, "header": {"x-firewall-token": "..."}}`; `ssl` and `header` are optional
 - **`signing_secret`** — **optional.** Auto-pulled via `GET /api/account/signing-secret` (authed by `key`) and cached. Pass it only to manage signing yourself.
 
-`credential["header"]` is excluded from ECIES encryption and sent as signed plaintext metadata for proxy/firewall integrations.
+`credential["header"]` is optional. When present, it is excluded from ECIES encryption and sent as signed plaintext metadata for proxy/firewall integrations.
+
+### Credential profiles and headers
+
+Use `credentials` when one app talks to more than one service, Redis logical DB,
+database user, or firewall/header variant:
+
+```python
+client = create_client(
+    url="https://YOUR_SUBDOMAIN.zedgi.app",
+    key=os.environ["ZEDGI_KEY"],
+    credentials={
+        "redis": {
+            "default": {"password": os.environ["REDIS_PASSWORD"], "db": 0},
+            "cache": {
+                "password": os.environ["REDIS_PASSWORD"],
+                "db": 1,
+                "header": {"x-firewall-token": os.environ["REDIS_FIREWALL_TOKEN"]},
+            },
+        },
+        "postgres": {
+            "default": {"user": "app", "password": os.environ["PG_PASSWORD"], "database": "app"},
+            "reporting": {
+                "user": "reporter",
+                "password": os.environ["PG_REPORTING_PASSWORD"],
+                "database": "reports",
+            },
+        },
+    },
+)
+
+redis = client.redis()              # credentials["redis"]["default"]
+cache = client.redis("cache")       # credentials["redis"]["cache"]
+pg = client.postgres("reporting")
+temp = client.redis({"password": os.environ["REDIS_PASSWORD"], "db": 2})
+```
+
+Credential selection order is: ad-hoc dict, named profile, service `default`,
+legacy `credential`, then no credential. If you request a missing profile, the
+client raises before making the HTTP request.
+
+`header` is optional and special: it is removed from the encrypted credential, added to the
+signed RPC body as `credentialHeader`, and forwarded as plaintext metadata for
+proxy/firewall integrations. Put only values there that the receiving proxy or
+firewall must see.
 
 ## Redis
 
@@ -109,7 +162,8 @@ Each op is sent as the redis service's `bull:<method>` and runs the real BullMQ 
 (default `bull` key prefix, so jobs interoperate with your own workers).
 
 ```python
-queue = zedgi.queue("emails")
+queue = zedgi.queue("emails")          # uses credentials["redis"]["default"]
+cache_queue = zedgi.queue("emails", "cache")  # uses credentials["redis"]["cache"]
 
 # Produce
 queue.add("send", {"to": "dev@example.com"}, {"attempts": 3})
@@ -199,7 +253,7 @@ result = t.call("redis", "get", {"args": ["mykey"]})
 - `RedisClient`, `PostgresClient`, `MySQLClient`, `Queue`
 - `RpcError`
 
-All clients are thin (stdlib only) for the RPC facade. For the full zero-knowledge "link" (client-side ECIES encryption of your DB credentials into `x-zedgi-cred` + request signing), supply just `key` + `credential`. The client auto-pulls both the signing secret (`GET /api/account/signing-secret`) and the account public key (`GET /api/account/keys/current`) using your `key`, and caches them — so you don't manage either. If `credential["header"]` is present, it is signed and forwarded separately instead of being public-key encrypted. See https://zedgi.app/docs for the full option reference.
+All clients are thin (stdlib only) for the RPC facade. For the full zero-knowledge "link" (client-side ECIES encryption of your DB credentials into `x-zedgi-cred` + request signing), supply `key` + `credential` or `credentials`. The client auto-pulls both the signing secret (`GET /api/account/signing-secret`) and the account public key (`GET /api/account/keys/current`) using your `key`, and caches them — so you don't manage either. If a credential/profile contains `header`, it is signed and forwarded separately instead of being public-key encrypted. See https://zedgi.app/docs for the full option reference.
 
 ## Related
 

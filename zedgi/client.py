@@ -12,9 +12,13 @@ import time
 import uuid
 import urllib.error
 import urllib.request
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Union
 
 from .crypto import encrypt_credential, hmac_sign, random_nonce, sha256_hex
+
+Credential = Dict[str, Any]
+CredentialSelector = Union[str, Credential]
+CredentialProfiles = Dict[str, Dict[str, Credential]]
 
 
 class RpcError(Exception):
@@ -45,11 +49,13 @@ class Transport:
         key: str,
         timeout: float = 10.0,
         signing_secret: Optional[str] = None,
-        credential: Optional[Dict[str, Any]] = None,
+        credential: Optional[Credential] = None,
+        credentials: Optional[CredentialProfiles] = None,
         public_key: Optional[str] = None,
         account_id: Optional[str] = None,
         key_version: Optional[int] = None,
         cache: bool = True,
+        test_node_uuid: Optional[str] = None,
     ) -> None:
         if not url:
             raise ValueError("url is required")
@@ -61,19 +67,32 @@ class Transport:
         self.timeout = timeout
         self.signing_secret = signing_secret
         self.credential = credential
+        self.credentials = credentials or {}
         self.public_key = public_key
         self.account_id = account_id
         self.key_version = key_version
+        self._pinned_account_key = public_key is not None and account_id is not None and key_version is not None
         self.cache = cache
-        self._cred_blob: Optional[str] = None
+        self.test_node_uuid = test_node_uuid
+        self._cred_blobs: Dict[int, str] = {}
         self._signing_secret: Optional[str] = signing_secret
 
     # -- account key resolution -------------------------------------------------
 
-    def _credential_parts(self) -> Dict[str, Any]:
-        if not self.credential:
+    def resolve_credential(self, service: str, selector: Optional[CredentialSelector] = None) -> Optional[Credential]:
+        if isinstance(selector, dict):
+            return selector
+        if isinstance(selector, str):
+            credential = self.credentials.get(service, {}).get(selector)
+            if credential is None:
+                raise ValueError(f'Zedgi credential profile "{selector}" was not found for {service}')
+            return credential
+        return self.credentials.get(service, {}).get("default") or self.credential
+
+    def _credential_parts(self, credential: Optional[Credential]) -> Dict[str, Any]:
+        if not credential:
             return {"encrypted": None, "header": None}
-        encrypted = dict(self.credential)
+        encrypted = dict(credential)
         header = encrypted.pop("header", None)
         if header is not None and not isinstance(header, dict):
             raise ValueError("credential.header must be a dict")
@@ -115,25 +134,32 @@ class Transport:
         self._signing_secret = parsed["result"]["signing_secret"]
         return self._signing_secret
 
-    def _resolve_cred_blob(self) -> Optional[str]:
-        if not self.credential:
+    def _resolve_cred_blob(self, credential: Optional[Credential]) -> Optional[str]:
+        if not credential:
             return None
-        if self.cache and self._cred_blob is not None:
-            return self._cred_blob
+        cache_key = id(credential)
+        if self.cache and cache_key in self._cred_blobs:
+            return self._cred_blobs[cache_key]
         ak = self._resolve_account_key()
-        blob = encrypt_credential(self._credential_parts()["encrypted"], ak["public_key"], ak["id"], ak["key_version"])
+        blob = encrypt_credential(self._credential_parts(credential)["encrypted"], ak["public_key"], ak["id"], ak["key_version"])
         if self.cache:
-            self._cred_blob = blob
+            self._cred_blobs[cache_key] = blob
         return blob
 
     # -- request ----------------------------------------------------------------
 
     def _auto_key_mode(self) -> bool:
         # True when we auto-pull the account key (so we can re-pull on rotation).
-        return not (self.public_key and self.account_id and self.key_version is not None)
+        return not self._pinned_account_key
 
-    def _send_once(self, service: str, method: str, payload: Optional[Dict[str, Any]]) -> tuple:
-        credential_header = self._credential_parts()["header"]
+    def _send_once(
+        self,
+        service: str,
+        method: str,
+        payload: Optional[Dict[str, Any]],
+        credential: Optional[Credential],
+    ) -> tuple:
+        credential_header = self._credential_parts(credential)["header"]
         body_payload: Dict[str, Any] = {
             "requestId": str(uuid.uuid4()),
             "service": service,
@@ -155,9 +181,11 @@ class Transport:
         headers["x-zedgi-nonce"] = nonce
         headers["x-zedgi-sig"] = hmac_sign(f"{ts}:{nonce}:{sha256_hex(body_str)}", secret)
 
-        cred_blob = self._resolve_cred_blob()
+        cred_blob = self._resolve_cred_blob(credential)
         if cred_blob:
             headers["x-zedgi-cred"] = cred_blob
+        if self.test_node_uuid:
+            headers["x-zedgi-node-uuid"] = self.test_node_uuid
 
         req = urllib.request.Request(self.url, data=body, method="POST", headers=headers)
 
@@ -172,19 +200,29 @@ class Transport:
         except urllib.error.URLError as exc:
             raise RpcError(f"Zedgi connection failed: {exc.reason}", code="ZEDGI_CONNECTION") from exc
 
-    def call(self, service: str, method: str, payload: Optional[Dict[str, Any]] = None) -> Any:
+    def call(
+        self,
+        service: str,
+        method: str,
+        payload: Optional[Dict[str, Any]] = None,
+        credential: Optional[CredentialSelector] = None,
+    ) -> Any:
+        resolved_credential = self.resolve_credential(service, credential)
         # Two attempts at most: on a rotated/outdated key (in auto mode) we drop the
         # cached public key + ciphertext, re-pull the current key, and retry once.
         for attempt in range(2):
-            status, parsed = self._send_once(service, method, payload)
+            status, parsed = self._send_once(service, method, payload, resolved_credential)
             if parsed.get("ok"):
                 return parsed.get("result")
 
             err = parsed.get("error") or {}
             stale_key = status == 412 or err.get("code") == "CRED_DECRYPT_FAILED"
             if attempt == 0 and self._auto_key_mode() and stale_key:
-                self._cred_blob = None
+                if resolved_credential is not None:
+                    self._cred_blobs.pop(id(resolved_credential), None)
                 self.public_key = None  # force a re-pull of the current active key
+                self.account_id = None
+                self.key_version = None
                 continue
 
             raise RpcError(

@@ -13,16 +13,17 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from .client import Transport
+from .client import CredentialSelector, Transport
 
 
 class Queue:
-    def __init__(self, transport: Transport, name: str) -> None:
+    def __init__(self, transport: Transport, name: str, credential: Optional[CredentialSelector] = None) -> None:
         self._t = transport
         self._name = name
+        self._credential = credential
 
     def _call(self, op: str, args: Optional[List[Any]] = None) -> Any:
-        return self._t.call("redis", f"bull:{op}", {"target": self._name, "args": args or []})
+        return self._t.call("redis", f"bull:{op}", {"target": self._name, "args": args or []}, self._credential)
 
     # ── Produce ───────────────────────────────────────────────────────
     def add(self, job_name: str, data: Any = None, opts: Optional[Dict[str, Any]] = None) -> Any:
@@ -47,14 +48,17 @@ class Queue:
     def count(self) -> int:
         return self._call("count")
 
+    # Monitor ops are routed to the backend's queue-monitor service, which reads
+    # the queue name from args[0] (not payload.target). getSnapshot covers all
+    # queues, so it takes no name.
     def get_snapshot(self) -> Any:
         return self._call("getSnapshot")
 
     def get_events(self) -> Any:
-        return self._call("getEvents")
+        return self._call("getEvents", [self._name])
 
     def get_recent_jobs_for_queue(self, limit: Optional[int] = None) -> Any:
-        return self._call("getRecentJobsForQueue", [limit])
+        return self._call("getRecentJobsForQueue", [self._name, limit])
 
     # ── Manage ────────────────────────────────────────────────────────
     def pause(self) -> bool:
