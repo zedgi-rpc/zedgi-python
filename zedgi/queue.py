@@ -25,9 +25,22 @@ class Queue:
     def _call(self, op: str, args: Optional[List[Any]] = None) -> Any:
         return self._t.call("redis", f"bull:{op}", {"target": self._name, "args": args or []}, self._credential)
 
+    def _call_payload(self, op: str, payload: Dict[str, Any]) -> Any:
+        return self._t.call("redis", f"bull:{op}", {"target": self._name, **payload}, self._credential)
+
     # ── Produce ───────────────────────────────────────────────────────
     def add(self, job_name: str, data: Any = None, opts: Optional[Dict[str, Any]] = None) -> Any:
         return self._call("add", [job_name, data, opts])
+
+    # ── Consume ───────────────────────────────────────────────────────
+    def dequeue(self, visibility_timeout_ms: Optional[int] = None) -> Any:
+        return self._call_payload("dequeue", {"visibilityTimeoutMs": visibility_timeout_ms})
+
+    def ack(self, job_id: str, return_value: Any = None) -> bool:
+        return self._call("ack", [job_id, return_value])
+
+    def fail(self, job_id: str, reason: Optional[str] = None) -> bool:
+        return self._call("fail", [job_id, reason])
 
     # ── Inspect ───────────────────────────────────────────────────────
     def get_job(self, job_id: str) -> Any:
