@@ -14,6 +14,7 @@ from typing import Any, Dict, Optional, Union
 from ._version import __version__
 from .client import RpcError, Transport
 from .mysql import MySQLClient
+from .memcached import MemcachedClient
 from .postgres import PostgresClient
 from .queue import Queue
 from .redis import RedisClient
@@ -60,6 +61,9 @@ class ZedgiClient:
 
     def mysql(self, credential: Optional[CredentialSelector] = None) -> MySQLClient:
         return MySQLClient(self._transport, credential)
+
+    def memcached(self, credential: Optional[CredentialSelector] = None) -> MemcachedClient:
+        return MemcachedClient(self._transport, credential)
 
     def queue(self, name: str, credential: Optional[CredentialSelector] = None) -> Queue:
         return Queue(self._transport, name, credential)
@@ -113,6 +117,7 @@ __all__ = [
     "RedisClient",
     "PostgresClient",
     "MySQLClient",
+    "MemcachedClient",
     "Queue",
     "RpcError",
     "__version__",

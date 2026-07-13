@@ -1,6 +1,6 @@
 # zedgi (Python)
 
-Call your own **Redis, Postgres, and MySQL** from any Python runtime over HTTPS — no TCP sockets required. Built on the standard library only (zero dependencies).
+Call your own **Redis, Postgres, MySQL, and Memcached beta** from any Python runtime over HTTPS — no TCP sockets required. Built on the standard library only (zero dependencies).
 
 ```bash
 pip install zedgi
