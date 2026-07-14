@@ -253,7 +253,7 @@ result = t.call("redis", "get", {"args": ["mykey"]})
 - `RedisClient`, `PostgresClient`, `MySQLClient`, `Queue`
 - `RpcError`
 
-All clients are thin (stdlib only) for the RPC facade. For the full zero-knowledge "link" (client-side ECIES encryption of your DB credentials into `x-zedgi-cred` + request signing), supply `key` + `credential` or `credentials`. The client auto-pulls both the signing secret (`GET /api/account/signing-secret`) and the account public key (`GET /api/account/keys/current`) using your `key`, and caches them — so you don't manage either. If a credential/profile contains `header`, it is signed and forwarded separately instead of being public-key encrypted. See https://zedgi.app/docs for the full option reference.
+All clients are thin (stdlib only) for the RPC facade. For the full zero-knowledge "link" (client-side ECIES encryption of your DB credentials into `x-zedgi-cred` + request signing), supply `key` + `credential` or `credentials`. The client auto-pulls both the signing secret (`GET /api/account/signing-secret`) and the account public key (`GET /api/account/keys/current`) using your `key`, and caches them; encrypted `x-zedgi-cred` blobs are reused for 55 minutes by credential content unless `cache=False`. Keep `cache=True` in production for best performance because it lets the gateway decrypt cache hit. Use `cache=False` only when you deliberately need fresh credential ciphertext on every request, for example while debugging credential encryption or testing rotation behavior. If a credential/profile contains `header`, it is signed and forwarded separately instead of being public-key encrypted. See https://zedgi.app/docs for the full option reference.
 
 ## Related
 

@@ -12,13 +12,14 @@ import time
 import uuid
 import urllib.error
 import urllib.request
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, Optional, Tuple, Union
 
 from .crypto import encrypt_credential, hmac_sign, random_nonce, sha256_hex
 
 Credential = Dict[str, Any]
 CredentialSelector = Union[str, Credential]
 CredentialProfiles = Dict[str, Dict[str, Credential]]
+_CRED_BLOB_TTL_SECONDS = 55 * 60
 
 
 class RpcError(Exception):
@@ -74,7 +75,7 @@ class Transport:
         self._pinned_account_key = public_key is not None and account_id is not None and key_version is not None
         self.cache = cache
         self.test_node_uuid = test_node_uuid
-        self._cred_blobs: Dict[int, str] = {}
+        self._cred_blobs: Dict[str, Tuple[float, str]] = {}
         self._signing_secret: Optional[str] = signing_secret
 
     # -- account key resolution -------------------------------------------------
@@ -137,13 +138,18 @@ class Transport:
     def _resolve_cred_blob(self, credential: Optional[Credential]) -> Optional[str]:
         if not credential:
             return None
-        cache_key = id(credential)
-        if self.cache and cache_key in self._cred_blobs:
-            return self._cred_blobs[cache_key]
         ak = self._resolve_account_key()
-        blob = encrypt_credential(self._credential_parts(credential)["encrypted"], ak["public_key"], ak["id"], ak["key_version"])
+        encrypted = self._credential_parts(credential)["encrypted"]
+        cache_key = f'{ak["id"]}:{ak["key_version"]}:{ak["public_key"]}:{json.dumps(encrypted, sort_keys=True, separators=(",", ":"))}'
+        now = time.time()
+        cached = self._cred_blobs.get(cache_key)
+        if self.cache and cached and cached[0] > now:
+            return cached[1]
+        blob = encrypt_credential(encrypted, ak["public_key"], ak["id"], ak["key_version"])
         if self.cache:
-            self._cred_blobs[cache_key] = blob
+            self._cred_blobs[cache_key] = (now + _CRED_BLOB_TTL_SECONDS, blob)
+            if len(self._cred_blobs) > 256:
+                self._cred_blobs.pop(next(iter(self._cred_blobs)), None)
         return blob
 
     # -- request ----------------------------------------------------------------
@@ -219,7 +225,7 @@ class Transport:
             stale_key = status == 412 or err.get("code") == "CRED_DECRYPT_FAILED"
             if attempt == 0 and self._auto_key_mode() and stale_key:
                 if resolved_credential is not None:
-                    self._cred_blobs.pop(id(resolved_credential), None)
+                    self._cred_blobs.clear()
                 self.public_key = None  # force a re-pull of the current active key
                 self.account_id = None
                 self.key_version = None
