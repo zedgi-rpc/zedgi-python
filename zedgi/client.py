@@ -77,6 +77,8 @@ class Transport:
         self.test_node_uuid = test_node_uuid
         self._cred_blobs: Dict[str, Tuple[float, str]] = {}
         self._signing_secret: Optional[str] = signing_secret
+        self._bootstrap_resolved = False
+        self.node_prefix: Optional[str] = None
 
     # -- account key resolution -------------------------------------------------
 
@@ -99,41 +101,51 @@ class Transport:
             raise ValueError("credential.header must be a dict")
         return {"encrypted": encrypted, "header": header}
 
-    def _resolve_account_key(self) -> Dict[str, Any]:
-        if self.public_key and self.account_id and self.key_version is not None:
-            return {"public_key": self.public_key, "id": self.account_id, "key_version": self.key_version}
+    def _resolve_bootstrap(self) -> None:
+        if self._bootstrap_resolved:
+            return
+
+        has_explicit_key = self.public_key and self.account_id and self.key_version is not None
+        explicit_secret = self._signing_secret
+
+        if has_explicit_key and explicit_secret:
+            self._bootstrap_resolved = True
+            return
 
         req = urllib.request.Request(
-            self.base + "/api/account/keys/current",
+            self.base + "/api/account/bootstrap",
             method="GET",
             headers={"x-zedgi-key": self.key},
         )
-        with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-            parsed = json.loads(resp.read().decode("utf-8"))
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                parsed = json.loads(resp.read().decode("utf-8"))
+        except Exception as exc:
+            raise RpcError(f"Failed to bootstrap client config: {exc}", code="ZEDGI_BOOTSTRAP_FAIL") from exc
+
         if not parsed.get("ok") or not parsed.get("result"):
-            raise RpcError("Failed to fetch account public key", code="ZEDGI_KEY_PULL")
+            raise RpcError("Failed to bootstrap client config", code="ZEDGI_BOOTSTRAP_FAIL")
+
         result = parsed["result"]
-        self.public_key = result["public_key"]
-        self.account_id = result["id"]
-        self.key_version = result["key_version"]
-        return result
+        if not has_explicit_key:
+            self.public_key = result["key"]["public_key"]
+            self.account_id = result["key"]["id"]
+            self.key_version = result["key"]["key_version"]
+        if not explicit_secret:
+            self._signing_secret = result["signing_secret"]
+
+        self.node_prefix = result.get("node_prefix")
+        self._bootstrap_resolved = True
+
+    def _resolve_account_key(self) -> Dict[str, Any]:
+        self._resolve_bootstrap()
+        return {"public_key": self.public_key, "id": self.account_id, "key_version": self.key_version}
 
     def _resolve_signing_secret(self) -> str:
         # Auto-pull the HMAC signing secret (and cache it) when not supplied, so
         # the developer never has to handle it. Authed by x-zedgi-key.
-        if self._signing_secret:
-            return self._signing_secret
-        req = urllib.request.Request(
-            self.base + "/api/account/signing-secret",
-            method="GET",
-            headers={"x-zedgi-key": self.key},
-        )
-        with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-            parsed = json.loads(resp.read().decode("utf-8"))
-        if not parsed.get("ok") or not parsed.get("result"):
-            raise RpcError("Failed to fetch signing secret", code="ZEDGI_SIGN_PULL")
-        self._signing_secret = parsed["result"]["signing_secret"]
-        return self._signing_secret
+        self._resolve_bootstrap()
+        return self._signing_secret  # type: ignore
 
     def _resolve_cred_blob(self, credential: Optional[Credential]) -> Optional[str]:
         if not credential:
@@ -181,6 +193,9 @@ class Transport:
 
         # Every request is signed; the signing secret is auto-pulled when not supplied.
         secret = self._resolve_signing_secret()
+        if self.node_prefix:
+            headers["x-zedgi-node"] = self.node_prefix
+
         ts = str(int(time.time() * 1000))
         nonce = random_nonce()
         headers["x-zedgi-ts"] = ts
@@ -197,6 +212,9 @@ class Transport:
 
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                resp_node = resp.getheader("x-zedgi-node")
+                if resp_node and self.node_prefix != resp_node:
+                    self.node_prefix = resp_node
                 return resp.status, json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:  # 4xx/5xx still carry a JSON body
             try:
@@ -224,11 +242,12 @@ class Transport:
             err = parsed.get("error") or {}
             stale_key = status == 412 or err.get("code") == "CRED_DECRYPT_FAILED"
             if attempt == 0 and self._auto_key_mode() and stale_key:
-                if resolved_credential is not None:
-                    self._cred_blobs.clear()
+                self._bootstrap_resolved = False
                 self.public_key = None  # force a re-pull of the current active key
                 self.account_id = None
                 self.key_version = None
+                if resolved_credential is not None:
+                    self._cred_blobs.clear()
                 continue
 
             raise RpcError(
