@@ -78,7 +78,8 @@ class Transport:
         self._cred_blobs: Dict[str, Tuple[float, str]] = {}
         self._signing_secret: Optional[str] = signing_secret
         self._bootstrap_resolved = False
-        self.node_prefix: Optional[str] = None
+        # Encrypted full node target from bootstrap (required for /rpc as x-zedgi-node).
+        self.node: Optional[str] = None
 
     # -- account key resolution -------------------------------------------------
 
@@ -108,10 +109,8 @@ class Transport:
         has_explicit_key = self.public_key and self.account_id and self.key_version is not None
         explicit_secret = self._signing_secret
 
-        if has_explicit_key and explicit_secret:
-            self._bootstrap_resolved = True
-            return
-
+        # Always bootstrap for the node blob (required on /rpc). Explicit key/secret
+        # can still override key material after the response.
         req = urllib.request.Request(
             self.base + "/api/account/bootstrap",
             method="GET",
@@ -134,7 +133,9 @@ class Transport:
         if not explicit_secret:
             self._signing_secret = result["signing_secret"]
 
-        self.node_prefix = result.get("node_prefix")
+        self.node = result.get("node") or result.get("node_prefix")
+        if not self.node and not self.test_node_uuid:
+            raise RpcError("Bootstrap returned no node", code="ZEDGI_NO_NODE")
         self._bootstrap_resolved = True
 
     def _resolve_account_key(self) -> Dict[str, Any]:
@@ -193,8 +194,10 @@ class Transport:
 
         # Every request is signed; the signing secret is auto-pulled when not supplied.
         secret = self._resolve_signing_secret()
-        if self.node_prefix:
-            headers["x-zedgi-node"] = self.node_prefix
+        if not self.test_node_uuid:
+            if not self.node:
+                raise RpcError("Missing node from bootstrap", code="ZEDGI_NO_NODE")
+            headers["x-zedgi-node"] = self.node
 
         ts = str(int(time.time() * 1000))
         nonce = random_nonce()
@@ -213,8 +216,8 @@ class Transport:
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                 resp_node = resp.getheader("x-zedgi-node")
-                if resp_node and self.node_prefix != resp_node:
-                    self.node_prefix = resp_node
+                if resp_node and self.node != resp_node:
+                    self.node = resp_node
                 return resp.status, json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:  # 4xx/5xx still carry a JSON body
             try:
