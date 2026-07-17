@@ -133,7 +133,7 @@ class Transport:
         if not explicit_secret:
             self._signing_secret = result["signing_secret"]
 
-        self.node = result.get("node") or result.get("node_prefix")
+        self.node = result.get("node")
         if not self.node and not self.test_node_uuid:
             raise RpcError("Bootstrap returned no node", code="ZEDGI_NO_NODE")
         self._bootstrap_resolved = True
